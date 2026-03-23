@@ -33,3 +33,4 @@ client/.env
 *.njsproj
 *.sln
 *.sw?
+client

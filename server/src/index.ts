@@ -92,8 +92,10 @@ whatsapp.on('qr', (qr) => {
 });
 
 whatsapp.on('ready', async () => {
-  console.log('WhatsApp Client is ready!');
-  io.emit('whatsapp_status', 'ready');
+  console.log('WhatsApp Client is ready! Starting sync...');
+
+  // 1. Tell the frontend to show the "Loading chats..." UI
+  io.emit('whatsapp_status', 'syncing');
 
   try {
     console.log('Fetching existing chats...');
@@ -120,10 +122,10 @@ whatsapp.on('ready', async () => {
           });
         }
 
-        // Fetch last 50 messages per chat
+        // Fetch up to 150 messages automatically on load (Adjust as needed)
         let chatMessages: any[] = [];
         try {
-          chatMessages = await chat.fetchMessages({ limit: 50 });
+          chatMessages = await chat.fetchMessages({ limit: 150 });
         } catch (e) {
           console.error(`Could not fetch messages for ${phone}:`, e);
           continue;
@@ -137,16 +139,19 @@ whatsapp.on('ready', async () => {
             if (exists) continue;
 
             const mediaFields = await processMedia(msg);
+
+            // Apply the improved recognition logic here too
             const isFromMe = msg.id?.fromMe || msg.fromMe || (whatsapp.info && msg.from === whatsapp.info.wid._serialized);
+            const actualIsIncoming = !isFromMe;
 
             await prisma.message.create({
               data: {
                 whatsappMessageId: msg.id.id,
-                from: msg.from || 'me',
-                to: msg.to || phone,
+                from: msg.from || (isFromMe ? 'me' : phone),
+                to: msg.to || (isFromMe ? phone : 'me'),
                 body: msg.body || '',
                 type: msg.type || 'text',
-                isIncoming: !isFromMe,
+                isIncoming: actualIsIncoming,
                 contactId: contact.id,
                 status: 'delivered',
                 timestamp: new Date(msg.timestamp * 1000),
@@ -162,50 +167,70 @@ whatsapp.on('ready', async () => {
       }
     }
     console.log('Initial sync completed!');
+
+    // 2. Tell the frontend the sync is complete so it can hide the loader
+    io.emit('whatsapp_status', 'ready');
+    io.emit('initial_sync_complete');
+
   } catch (error) {
     console.error('Error during initial sync:', error);
+    // Fallback to ready so the UI doesn't get stuck loading forever if an error occurs
+    io.emit('whatsapp_status', 'ready');
   }
 });
 
-// ─── Incoming messages ────────────────────────────────────────────────────────
-whatsapp.on('message', async (msg) => {
+// ─── Incoming & Outgoing messages (real-time sync) ────────────────────────
+whatsapp.on('message_create', async (msg) => {
   try {
-    const from = msg.from;
+    if (msg.from === 'status@broadcast' || msg.to === 'status@broadcast') return;
+
+    // 1. Properly detect if the message was sent by you (from your phone) or the contact
+    const isFromMe = msg.id?.fromMe || msg.fromMe || (whatsapp.info && msg.from === whatsapp.info.wid._serialized);
+    const actualIsIncoming = !isFromMe;
+
+    // 2. Identify the correct contact phone number depending on the message direction
+    const contactPhone = actualIsIncoming ? msg.from : msg.to;
     const body = msg.body || '';
 
-    if (from === 'status@broadcast') return;
-
-    let contactName: string = from;
+    let contactName: string = contactPhone;
     try {
       const c = await msg.getContact();
-      contactName = c.pushname || c.name || from;
-    } catch (_) {}
+      contactName = c.pushname || c.name || contactPhone;
+    } catch (_) { }
 
-    let contact = await prisma.contact.findUnique({ where: { phone: from } });
+    // 3. Find or create the contact in the database
+    let contact = await prisma.contact.findUnique({ where: { phone: contactPhone } });
     if (!contact) {
       contact = await prisma.contact.create({
-        data: { phone: from, name: contactName },
+        data: { phone: contactPhone, name: contactName },
       });
     }
 
+    // 4. Prevent duplicate entries if the message was sent via the CRM's UI
+    const exists = await prisma.message.findUnique({
+      where: { whatsappMessageId: msg.id.id },
+    });
+    if (exists) return;
+
     const mediaFields = await processMedia(msg);
 
+    // 5. Save the message with dynamic from/to and the correct isIncoming flag
     const savedMessage = await prisma.message.create({
       data: {
         whatsappMessageId: msg.id.id,
-        from,
-        to: 'me',
+        from: msg.from || (isFromMe ? 'me' : contactPhone),
+        to: msg.to || (isFromMe ? contactPhone : 'me'),
         body,
         type: msg.type || 'text',
-        isIncoming: true,
+        isIncoming: actualIsIncoming,
         contactId: contact.id,
         status: 'delivered',
-        timestamp: new Date(),
+        timestamp: new Date(msg.timestamp * 1000), // Uses WhatsApp's exact timestamp
         ...mediaFields,
       },
     });
 
-    console.log(`New message from ${from}: ${body}`);
+    console.log(`New message ${actualIsIncoming ? 'from' : 'to'} ${contactPhone}: ${body}`);
     io.emit('new_message', savedMessage);
 
     // Also emit updated chat info so sidebar updates live
@@ -217,7 +242,7 @@ whatsapp.on('message', async (msg) => {
       lastMessageTime: savedMessage.timestamp,
     });
   } catch (error) {
-    console.error('Error syncing incoming message:', error);
+    console.error('Error syncing message_create:', error);
   }
 });
 
@@ -351,7 +376,7 @@ app.post('/api/chats/:contactId/sync', async (req, res) => {
     for (const msg of messages) {
       try {
         const mediaFields = await processMedia(msg);
-        
+
         // msg.id.fromMe is the most reliable source of truth, but fallback to wid match
         const isFromMe = msg.id?.fromMe || msg.fromMe || (whatsapp.info && msg.from === whatsapp.info.wid._serialized);
         const actualIsIncoming = !isFromMe;
@@ -375,13 +400,13 @@ app.post('/api/chats/:contactId/sync', async (req, res) => {
             ...mediaFields,
           },
         });
-        
+
         addedCount++;
       } catch (err) {
         console.error(`Error syncing historical msg ${msg.id?.id}:`, err);
       }
     }
-    
+
     res.json({ success: true, addedCount });
   } catch (error) {
     console.error('Sync error:', error);

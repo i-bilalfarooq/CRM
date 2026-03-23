@@ -1,0 +1,62 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Contact {
+  id             String            @id @default(uuid())
+  phone          String            @unique
+  name           String?
+  marketingOptIn Boolean           @default(false)
+  campaignStatus String?           // e.g., "Active", "Inactive"
+  otherInfo      Json?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  messages       Message[]
+  tags           Tag[]
+  customParams   CustomParameter[]
+  comments       Comment[]
+}
+
+model Tag {
+  id       String    @id @default(uuid())
+  name     String    @unique
+  color    String?   @default("#10b981") // Tailwind emerald-500
+  contacts Contact[]
+}
+
+model CustomParameter {
+  id        String  @id @default(uuid())
+  key       String
+  value     String
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id])
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  text      String
+  contactId String
+  contact   Contact  @relation(fields: [contactId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model Message {
+  id                 String   @id @default(uuid())
+  whatsappMessageId String?  @unique
+  from               String
+  to                 String
+  body               String?
+  type               String   // "text", "image", "document", "video", "audio", etc.
+  status             String?  // "sent", "delivered", "read", "failed"
+  timestamp          DateTime @default(now())
+  isIncoming         Boolean  @default(false)
+  contactId          String?
+  contact            Contact? @relation(fields: [contactId], references: [id])
+  mediaUrl           String?
+  fileName           String?
+  fileMimeType       String?
+}

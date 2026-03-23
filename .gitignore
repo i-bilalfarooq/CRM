@@ -1,0 +1,35 @@
+# monorepo ignores
+node_modules/
+.DS_Store
+
+# client
+client/.next/
+client/out/
+client/build
+client/tsconfig.tsbuildinfo
+
+# server
+server/node_modules/
+server/.wwebjs_auth/
+server/.wwebjs_cache/
+server/uploads/
+server/dist/
+server/*.log
+
+# environments
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+server/.env
+client/.env
+
+# editors
+.vscode/
+.idea/
+*.suo
+*.ntvs
+*.njsproj
+*.sln
+*.sw?
